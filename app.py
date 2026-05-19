@@ -268,38 +268,46 @@ if "modo_cantidades" not in st.session_state:
 if "no_modelados_cero" not in st.session_state:
     st.session_state["no_modelados_cero"] = False
 
-# Función automática para detectar carpetas de proyectos reales
+# --- RADAR GLOBAL DE PROYECTOS (A PRUEBA DE GITHUB) ---
 def detectar_proyectos():
-    ruta_base = "Obras"
-    if not os.path.exists(ruta_base):
-        os.makedirs(ruta_base)
+    """Escanea toda la estructura de directorios en busca de obras de Lulo Win"""
+    proyectos_validos = {}
     
-    proyectos_validos = []
-    for d in os.listdir(ruta_base):
-        ruta_completa = os.path.join(ruta_base, d)
-        if os.path.isdir(ruta_completa):
-            if os.path.exists(os.path.join(ruta_completa, "ObraApun.csv")):
-                proyectos_validos.append(d)
+    # 1. Buscar en la raíz (si los CSV se soltaron directamente)
+    if os.path.exists("ObraApun.csv"):
+        proyectos_validos["Proyecto Raíz (Principal)"] = "."
+        
+    # 2. Buscar en la carpeta clásica 'Obras'
+    if os.path.exists("Obras"):
+        for d in os.listdir("Obras"):
+            ruta_completa = os.path.join("Obras", d)
+            if os.path.isdir(ruta_completa) and os.path.exists(os.path.join(ruta_completa, "ObraApun.csv")):
+                proyectos_validos[d] = ruta_completa
+                
+    # 3. Buscar carpetas de proyectos sueltas en la raíz (El caso de GitHub)
+    for d in os.listdir("."):
+        if os.path.isdir(d) and d not in ["Obras", ".git", ".streamlit", "__pycache__"]:
+            if os.path.exists(os.path.join(d, "ObraApun.csv")):
+                proyectos_validos[d] = d
+                
     return proyectos_validos
 
 @st.cache_data
-def consolidar_ingenieria_costos_lulo(nombre_proyecto):
-    ruta = os.path.join("Obras", nombre_proyecto)
-    
-    # 1. Tablas numéricas y de control
-    df_presupuesto = pd.read_csv(os.path.join(ruta, "ObraApun.csv"))
-    df_mat_apu = pd.read_csv(os.path.join(ruta, "ObraApinMate.csv"))
-    df_mano_apu = pd.read_csv(os.path.join(ruta, "ObraApinMano.csv"))
-    df_equ_apu = pd.read_csv(os.path.join(ruta, "ObraApinEqui.csv"))
-    df_capitulos = pd.read_csv(os.path.join(ruta, "ObraCapi.csv"))
-    df_proyecto = pd.read_csv(os.path.join(ruta, "ObraProy.csv")).iloc[0]
+def consolidar_ingenieria_costos_lulo(ruta_proyecto):
+    # Ya no forzamos que esté en 'Obras', usamos la ruta exacta que encontró el radar
+    df_presupuesto = pd.read_csv(os.path.join(ruta_proyecto, "ObraApun.csv"))
+    df_mat_apu = pd.read_csv(os.path.join(ruta_proyecto, "ObraApinMate.csv"))
+    df_mano_apu = pd.read_csv(os.path.join(ruta_proyecto, "ObraApinMano.csv"))
+    df_equ_apu = pd.read_csv(os.path.join(ruta_proyecto, "ObraApinEqui.csv"))
+    df_capitulos = pd.read_csv(os.path.join(ruta_proyecto, "ObraCapi.csv"))
+    df_proyecto = pd.read_csv(os.path.join(ruta_proyecto, "ObraProy.csv")).iloc[0]
     
     # 2. Diccionarios maestros de texto
-    df_dict_partidas = pd.read_csv(os.path.join(ruta, "ObraPart.csv"))[["CodPar", "Descri", "UniPar"]].rename(columns={"Descri": "NomPar"})
-    df_dict_mate = pd.read_csv(os.path.join(ruta, "ObraMate.csv"))[["CodMat", "Descri", "UniMat"]].rename(columns={"CodMat": "CodIns", "Descri": "NomIns", "UniMat": "UniIns"})
-    df_dict_mano = pd.read_csv(os.path.join(ruta, "ObraMano.csv"))[["CodMan", "Descri"]].rename(columns={"CodMan": "CodIns", "Descri": "NomIns"})
+    df_dict_partidas = pd.read_csv(os.path.join(ruta_proyecto, "ObraPart.csv"))[["CodPar", "Descri", "UniPar"]].rename(columns={"Descri": "NomPar"})
+    df_dict_mate = pd.read_csv(os.path.join(ruta_proyecto, "ObraMate.csv"))[["CodMat", "Descri", "UniMat"]].rename(columns={"CodMat": "CodIns", "Descri": "NomIns", "UniMat": "UniIns"})
+    df_dict_mano = pd.read_csv(os.path.join(ruta_proyecto, "ObraMano.csv"))[["CodMan", "Descri"]].rename(columns={"CodMan": "CodIns", "Descri": "NomIns"})
     df_dict_mano["UniIns"] = "JORNAL"
-    df_dict_equi = pd.read_csv(os.path.join(ruta, "ObraEqui.csv"))[["CodEqu", "Descri"]].rename(columns={"CodEqu": "CodIns", "Descri": "NomIns"})
+    df_dict_equi = pd.read_csv(os.path.join(ruta_proyecto, "ObraEqui.csv"))[["CodEqu", "Descri"]].rename(columns={"CodEqu": "CodIns", "Descri": "NomIns"})
     df_dict_equi["UniIns"] = "DIA"
     
     df_insumos_master = pd.concat([df_dict_mate, df_dict_mano, df_dict_equi], ignore_index=True).drop_duplicates(subset=["CodIns"])
@@ -312,17 +320,21 @@ def consolidar_ingenieria_costos_lulo(nombre_proyecto):
 # --- ESTRUCTURA DEL HUB ---
 st.title("📊 Consola Maestra de Control Financiero y Auditoría")
 
-proyectos_disponibles = detectar_proyectos()
+# Usar el nuevo radar global para obtener diccionario {Nombre: Ruta}
+proyectos_dict = detectar_proyectos()
 
-if not proyectos_disponibles:
-    st.info("💡 Estructura de carpetas vacía. Coloca los archivos extraídos en la carpeta 'Obras'.")
+if not proyectos_dict:
+    st.info("💡 No se detectaron archivos del presupuesto. Sube las carpetas de Lulo Win a GitHub para empezar.")
 else:
     st.sidebar.markdown("### 🌐 Gestión de Portafolio")
-    proyecto_seleccionado = st.sidebar.selectbox("Seleccione el Proyecto Activo:", proyectos_disponibles)
+    nombres_proyectos = list(proyectos_dict.keys())
+    proyecto_seleccionado = st.sidebar.selectbox("Seleccione el Proyecto Activo:", nombres_proyectos)
     st.sidebar.write("---")
     
     try:
-        df_pres, df_mat, df_mano, df_equ, df_cap, df_insumos, df_proy = consolidar_ingenieria_costos_lulo(proyecto_seleccionado)
+        # Obtener la ruta exacta del proyecto seleccionado
+        ruta_seleccionada = proyectos_dict[proyecto_seleccionado]
+        df_pres, df_mat, df_mano, df_equ, df_cap, df_insumos, df_proy = consolidar_ingenieria_costos_lulo(ruta_seleccionada)
         
         # Ficha lateral de portafolio
         st.sidebar.markdown(f"**Cliente:** {df_proy.get('Propie', 'N/A')}\n\n**Calculista:** {df_proy.get('Calcul', 'N/A')}\n\n**Revisor:** {df_proy.get('Reviso', 'N/A')}")
