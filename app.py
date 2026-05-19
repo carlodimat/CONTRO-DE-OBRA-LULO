@@ -168,7 +168,7 @@ def load_csv_robustly(file_buffer):
         
         # 8. Filtrar filas inútiles o sumatorias "Grand Total"
         def is_valid_row(row):
-            row_str = " ".join(row.astype(str).fillna("").lower())
+            row_str = " ".join(row.astype(str).fillna("")).lower()
             if "total" in row_str or "suma" in row_str or "grand total" in row_str:
                 return False
             return True
