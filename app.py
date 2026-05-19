@@ -4,7 +4,6 @@ import os
 import plotly.express as px
 import plotly.graph_objects as go
 import re
-import csv
 import io
 
 # Configuración de diseño corporativo de alta gama
@@ -43,7 +42,7 @@ def clean_numeric_value(val):
     if not val_str:
         return 0.0
     
-    # Extraer estrictamente números del 0-9, decimales y negativos (Ignora m³, m²)
+    # Extraer estrictamente números del 0-9, decimales y negativos (Ignora m³, m², letras)
     cleaned = ""
     for char in val_str:
         if char in '0123456789.,-':
@@ -80,63 +79,67 @@ def clean_numeric_value(val):
     except ValueError:
         return 0.0
 
-# --- NUEVO MOTOR DE LECTURA DIRECTA PANDAS (Rápido y Seguro para CSV limpios de Revit) ---
+# --- NUEVO MOTOR DE LECTURA DIRECTA (LIBRE DEL BUG LENGTH MISMATCH) ---
 def load_csv_robustly(file_buffer):
     if file_buffer is None:
         return None
     try:
         raw_data = file_buffer.getvalue()
         
-        # 1. Autodetectar codificación evitando que UTF-16 sea malinterpretado
+        # 1. Decodificar limpiamente erradicando los "bytes venenosos"
+        decoded_text = None
         encodings = ['utf-8', 'utf-16', 'latin1', 'cp1252']
         if b'\x00' in raw_data or raw_data.startswith(b'\xff\xfe') or raw_data.startswith(b'\xfe\xff'):
             encodings = ['utf-16', 'utf-8', 'latin1', 'cp1252']
             
-        df = None
         for enc in encodings:
             try:
-                decoded = raw_data.decode(enc)
-                # Eliminar bytes nulos que confunden a Pandas
-                decoded = decoded.replace('\x00', '')
-                # Homogeneizar saltos de línea
-                decoded = decoded.replace('\r\n', '\n').replace('\r', '\n')
-                
-                # Probar lectura directa con el motor de Pandas
-                temp_df = pd.read_csv(io.StringIO(decoded), sep=None, engine='python', on_bad_lines='skip')
-                
-                if not temp_df.empty and len(temp_df.columns) > 0:
-                    df = temp_df
-                    break
+                decoded_text = raw_data.decode(enc).replace('\x00', '')
+                break
             except Exception:
-                pass
+                continue
                 
-        if df is None or df.empty:
-            # Fallback absoluto a lectura estándar delimitada por comas
-            df = pd.read_csv(io.BytesIO(raw_data), on_bad_lines='skip')
+        if not decoded_text:
+            decoded_text = raw_data.decode('utf-8', errors='ignore')
             
+        # 2. Motor nativo Pandas (La forma más veloz y segura para CSV limpios)
+        df = pd.read_csv(io.StringIO(decoded_text), sep=None, engine='python', on_bad_lines='skip')
+        
         if df is None or df.empty:
             return None
             
-        # --- LIMPIEZA POST-CARGA DEL DATAFRAME ---
-        df = df.dropna(how='all') # Eliminar filas 100% vacías
-        df = df.dropna(how='all', axis=1) # Eliminar columnas 100% vacías
+        # 3. EVITAR EL ERROR PANDAS "LENGTH MISMATCH" (Obligatorio clonar la memoria)
+        df = df.copy()
         
-        # Erradicar columnas 'Unnamed' o vacías que no contienen datos útiles
-        keep_indices = []
+        # Limpieza de vacíos
+        df = df.dropna(how='all')
+        df = df.dropna(how='all', axis=1)
+        
+        # 4. Modo Rescate: Si el usuario exportó el Título de Tabla sin querer, las columnas dicen "Unnamed"
+        unnamed_count = sum(1 for c in df.columns if "unnamed" in str(c).lower())
+        if unnamed_count >= len(df.columns) / 2 and len(df) > 0:
+            new_header = df.iloc[0].astype(str)
+            df = df[1:].copy()
+            df.columns = new_header
+            df = df.dropna(how='all', axis=1)
+            
+        # 5. Cortar las columnas basura residuales (Como la coma final que pone Revit)
+        keep_cols = []
         new_names = []
         for i, col in enumerate(df.columns):
             col_str = str(col).strip()
             if "unnamed" in col_str.lower() or col_str.lower() in ['nan', 'none'] or not col_str:
-                if df.iloc[:, i].notna().sum() > 1: # Si tiene al menos 2 datos, la salvamos
-                    keep_indices.append(i)
-                    new_names.append(f"Col_Adicional_{i+1}")
+                if df.iloc[:, i].notna().sum() > 0: # Salvar si tiene datos
+                    keep_cols.append(df.columns[i])
+                    new_names.append(f"Col_Extra_{i+1}")
             else:
-                keep_indices.append(i)
+                keep_cols.append(df.columns[i])
                 new_names.append(col_str)
                 
-        df = df.iloc[:, keep_indices]
+        # Seleccionar las columnas útiles haciendo otra copia en duro
+        df = df[keep_cols].copy()
         
-        # BLINDAJE STREAMLIT: Asegurar nombres de columnas únicos para que no colapse la interfaz
+        # 6. Blindaje de Streamlit: Garantizar nombres únicos
         seen = {}
         unique_cols = []
         for col in new_names:
@@ -146,9 +149,10 @@ def load_csv_robustly(file_buffer):
             else:
                 seen[col] = 0
                 unique_cols.append(col)
+                
         df.columns = unique_cols
         
-        # Filtrar filas de sumatorias finales (Grand Total) exportadas por Revit
+        # 7. Filtrar filas inútiles o sumatorias "Grand Total"
         def is_valid_row(row):
             row_str = " ".join(row.astype(str).fillna("").lower())
             if "total" in row_str or "suma" in row_str or "grand total" in row_str:
@@ -1015,17 +1019,4 @@ else:
                     
                     df_audit_visual = df_audit_filtrada[[
                         "CodPar", "NomPar", "CanPar", "Cantidad_Revit", "Diferencia_Cantidad", "Diferencia_Porcentual (%)", "PreUni", "Impacto_Financiero ($)", "Estado Conciliación"
-                    ]].sort_values(by="Impacto_Financiero ($)", key=abs, ascending=False).reset_index(drop=True)
-                    
-                    df_audit_visual.columns = [
-                        "Código", "Descripción de la Partida", "Cant. Lulo", "Cant. Revit", "Dif. Cantidad", "Desv. (%)", "P.U. ($)", "Impacto ($)", "Auditoría de Conciliación"
-                    ]
-                    
-                    st.dataframe(df_audit_visual.style.format({
-                        "Cant. Lulo": "{:,.2f}", "Cant. Revit": "{:,.2f}", "Dif. Cantidad": "{:,.2f}", 
-                        "Desv. (%)": "{:.2f}%", "P.U. ($)": "${:,.2f}", "Impacto ($)": "${:,.2f}"
-                    }), width="stretch", height=500)
-
-    except Exception as e:
-        st.error(f"⚠️ Error al sincronizar los datos relacionales avanzados del proyecto. Por favor verifica tus archivos CSV.")
-        st.code(str(e))
+                    ]].sort_values(by="
