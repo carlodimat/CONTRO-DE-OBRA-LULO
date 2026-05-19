@@ -99,11 +99,6 @@ def load_csv_robustly(file_buffer):
         if not decoded_text:
             decoded_text = raw_data.decode('utf-8', errors='ignore')
             
-        # Limpiar unidades adicionales de Revit que ensucian los números ANTES de entrar a Pandas
-        unidades_a_borrar = ['m³', 'm²', 'kg', 'ml', 'mm', 'cm', 'm']
-        for unidad in unidades_a_borrar:
-            decoded_text = decoded_text.replace(unidad, '')
-            
         first_lines = "\n".join(decoded_text.split('\n')[:20])
         separators = [',', ';', '\t']
         sep_counts = {sep: first_lines.count(sep) for sep in separators}
@@ -157,7 +152,8 @@ def load_csv_robustly(file_buffer):
         df = df.dropna(how='all')
         
         def is_valid_row(row):
-            row_str = " ".join(row.astype(str).fillna("").lower())
+            # Corregido: El .lower() debe ir DESPUÉS de haber unido los elementos en un string
+            row_str = " ".join(row.astype(str).fillna("")).lower()
             if "total" in row_str or "suma" in row_str or "grand total" in row_str:
                 return False
             return True
@@ -318,7 +314,10 @@ else:
                 if elem_name in st.session_state["advanced_mapping"]:
                     map_data = st.session_state["advanced_mapping"][elem_name]
                     codigos_lulo = map_data.get("codes", [])
-                    col_usar = map_data.get("col_cant", revit_df.columns[1]) + "_clean"
+                    
+                    # Evitar errores si la tabla tiene una sola columna o la guardada ya no existe
+                    fallback_col = revit_df.columns[-1] if len(revit_df.columns) > 1 else revit_df.columns[0]
+                    col_usar = map_data.get("col_cant", fallback_col) + "_clean"
                     factor = float(map_data.get("factor", 1.0))
                     
                     if col_usar in revit_df.columns:
