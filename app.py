@@ -102,6 +102,9 @@ def load_csv_robustly(file_buffer):
         if not decoded_text:
             decoded_text = raw_data.decode('utf-8', errors='ignore')
             
+        # Limpiar unidades adicionales de Revit que ensucian los números ANTES de entrar a Pandas
+        decoded_text = decoded_text.replace('m³', '').replace('m²', '').replace('kg', '').replace('m', '')
+            
         # 2. Detección manual del separador
         first_lines = "\n".join(decoded_text.split('\n')[:20])
         separators = [',', ';', '\t']
@@ -112,9 +115,9 @@ def load_csv_robustly(file_buffer):
             
         # 3. Leer con Pandas
         try:
-            df = pd.read_csv(io.StringIO(decoded_text), sep=best_sep, on_bad_lines='skip')
+            df = pd.read_csv(io.StringIO(decoded_text), sep=best_sep, on_bad_lines='skip', quotechar='"')
         except Exception:
-            df = pd.read_csv(io.StringIO(decoded_text), sep=best_sep, engine='python', on_bad_lines='skip')
+            df = pd.read_csv(io.StringIO(decoded_text), sep=best_sep, engine='python', on_bad_lines='skip', quotechar='"')
         
         if df is None or df.empty:
             return None
