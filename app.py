@@ -689,14 +689,19 @@ else:
                             if col_c in r_row.index:
                                 qty = r_row[col_c] * fac
                                 for c in data.get("codes", []):
-                                    expanded_rows.append({"CodPar": c, "Cantidad_Revit_Item": qty})
+                                    # NUEVA MEJORA: Pasamos el nombre del elemento para poder auditar qué se sumó
+                                    expanded_rows.append({"CodPar": c, "Cantidad_Revit_Item": qty, "Elemento_Revit_Origen": elem_name})
                     
                     if expanded_rows:
                         df_expanded_revit = pd.DataFrame(expanded_rows)
-                        cantidades_mapeadas = df_expanded_revit.groupby("CodPar")["Cantidad_Revit_Item"].sum().reset_index()
-                        cantidades_mapeadas.columns = ["CodPar", "Cantidad_Revit"]
+                        # Agrupación N-a-1: Suma las cantidades y concatena los nombres para el rastro de auditoría
+                        cantidades_mapeadas = df_expanded_revit.groupby("CodPar").agg({
+                            "Cantidad_Revit_Item": "sum",
+                            "Elemento_Revit_Origen": lambda x: " + ".join(pd.unique(x))
+                        }).reset_index()
+                        cantidades_mapeadas.columns = ["CodPar", "Cantidad_Revit", "Elementos_Revit_Agrupados"]
                     else:
-                        cantidades_mapeadas = pd.DataFrame(columns=["CodPar", "Cantidad_Revit"])
+                        cantidades_mapeadas = pd.DataFrame(columns=["CodPar", "Cantidad_Revit", "Elementos_Revit_Agrupados"])
                     
                     df_audit = pd.merge(df_pres, cantidades_mapeadas, on="CodPar", how="outer")
                     df_audit["CanPar"] = df_audit["CanPar"].fillna(0.00)
@@ -704,6 +709,12 @@ else:
                     df_audit["PreUni"] = df_audit["PreUni"].fillna(0.00)
                     df_audit["NomPar"] = df_audit["NomPar"].fillna("No mapeado en Lulo Win")
                     df_audit["CodPar"] = df_audit["CodPar"].fillna("S/C")
+                    
+                    # Proteger la columna de elementos agrupados en caso de que esté vacía
+                    if "Elementos_Revit_Agrupados" in df_audit.columns:
+                        df_audit["Elementos_Revit_Agrupados"] = df_audit["Elementos_Revit_Agrupados"].fillna("-")
+                    else:
+                        df_audit["Elementos_Revit_Agrupados"] = "-"
                     
                     df_audit["Diferencia_Cantidad"] = df_audit["Cantidad_Revit"] - df_audit["CanPar"]
                     df_audit["Diferencia_Porcentual (%)"] = df_audit.apply(lambda x: (x["Diferencia_Cantidad"] / x["CanPar"] * 100) if x["CanPar"] > 0 else (100.00 if x["Cantidad_Revit"] > 0 else 0.00), axis=1)
@@ -728,8 +739,10 @@ else:
                     
                     estado_filtro = st.multiselect("Filtrar Auditoría por Estado:", ["🟢 Match Perfecto", "🟡 Discrepancia Física", "🔴 Omisión en Presupuesto (No cobrado)", "🔵 Omisión en Modelo 3D (No modelado)"], default=["🟡 Discrepancia Física", "🔴 Omisión en Presupuesto (No cobrado)", "🔵 Omisión en Modelo 3D (No modelado)"])
                     df_audit_visual = df_audit[df_audit["Estado Conciliación"].isin(estado_filtro)].copy()
-                    df_audit_visual = df_audit_visual[["CodPar", "NomPar", "CanPar", "Cantidad_Revit", "Diferencia_Cantidad", "Diferencia_Porcentual (%)", "PreUni", "Impacto_Financiero ($)", "Estado Conciliación"]].sort_values(by="Impacto_Financiero ($)", key=abs, ascending=False).reset_index(drop=True)
-                    df_audit_visual.columns = ["Código", "Descripción de la Partida", "Cant. Lulo", "Cant. Revit", "Dif. Cantidad", "Desv. (%)", "P.U. ($)", "Impacto ($)", "Auditoría de Conciliación"]
+                    df_audit_visual = df_audit_visual[["CodPar", "NomPar", "Elementos_Revit_Agrupados", "CanPar", "Cantidad_Revit", "Diferencia_Cantidad", "Diferencia_Porcentual (%)", "PreUni", "Impacto_Financiero ($)", "Estado Conciliación"]].sort_values(by="Impacto_Financiero ($)", key=abs, ascending=False).reset_index(drop=True)
+                    
+                    # Ahora la tabla le mostrará al usuario exactamente qué cosas de Revit se sumaron para llegar al total
+                    df_audit_visual.columns = ["Código", "Descripción Lulo", "🧩 Elementos Sumados de Revit", "Cant. Lulo", "Cant. Revit", "Dif. Cantidad", "Desv. (%)", "P.U. ($)", "Impacto ($)", "Auditoría de Conciliación"]
                     st.dataframe(df_audit_visual.style.format({"Cant. Lulo": "{:,.2f}", "Cant. Revit": "{:,.2f}", "Dif. Cantidad": "{:,.2f}", "Desv. (%)": "{:.2f}%", "P.U. ($)": "${:,.2f}", "Impacto ($)": "${:,.2f}"}), width="stretch", height=500)
 
     except Exception as e:
