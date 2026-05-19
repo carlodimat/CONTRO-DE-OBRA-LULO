@@ -152,7 +152,6 @@ def load_csv_robustly(file_buffer):
         df = df.dropna(how='all')
         
         def is_valid_row(row):
-            # Corregido: El .lower() debe ir DESPUÉS de haber unido los elementos en un string
             row_str = " ".join(row.astype(str).fillna("")).lower()
             if "total" in row_str or "suma" in row_str or "grand total" in row_str:
                 return False
@@ -213,7 +212,6 @@ def encontrar_mejor_coincidencia(revit_desc, lulo_items):
 # --- INICIALIZACIÓN DE VARIABLES DE ESTADO ---
 if "revit_raw_df" not in st.session_state:
     st.session_state["revit_raw_df"] = None
-# NUEVO MOTOR MULTIVARIABLE: Guarda { "Nombre_Revit": {"codes": ["Cod1"], "col_cant": "Area", "factor": 1.0} }
 if "advanced_mapping" not in st.session_state:
     st.session_state["advanced_mapping"] = {} 
 if "modo_cantidades" not in st.session_state:
@@ -295,13 +293,12 @@ else:
         else:
             st.session_state["modo_cantidades"] = "Original Lulo"
         
-        # --- PROCESAMIENTO DINÁMICO DE CANTIDADES (MULTIVARIABLE CON IDENTIFICADOR COMPUESTO) ---
+        # --- PROCESAMIENTO DINÁMICO DE CANTIDADES ---
         if conector_listo and st.session_state["modo_cantidades"] == "Modelo Revit 3D":
             revit_df = st.session_state["revit_raw_df"].copy()
             col_desc = st.session_state.get("col_desc_global", revit_df.columns[0])
             col_mat = st.session_state.get("col_mat_global", "NO_USAR")
             
-            # Crear el identificador único compuesto
             if col_mat != "NO_USAR" and col_mat in revit_df.columns:
                 revit_df["Identificador_Compuesto"] = revit_df[col_desc].astype(str) + " | " + revit_df[col_mat].astype(str)
             else:
@@ -309,7 +306,6 @@ else:
                 
             identificador_col = "Identificador_Compuesto"
             
-            # Pre-limpiar todas las columnas numéricas para cálculos rápidos
             for col in revit_df.columns:
                 if col not in [col_desc, col_mat, identificador_col]:
                     revit_df[col + "_clean"] = revit_df[col].apply(clean_numeric_value)
@@ -317,14 +313,11 @@ else:
             cantidades_revit_acumuladas = {row["CodPar"]: 0.0 for _, row in df_pres.iterrows()}
             partidas_mapeadas_set = set()
             
-            # Bucle de acumulación con Factores de Conversión y Columnas Dinámicas
             for _, row in revit_df.iterrows():
                 elem_name = row[identificador_col]
                 if elem_name in st.session_state["advanced_mapping"]:
                     map_data = st.session_state["advanced_mapping"][elem_name]
                     codigos_lulo = map_data.get("codes", [])
-                    
-                    # Evitar errores si la tabla tiene una sola columna o la guardada ya no existe
                     fallback_col = revit_df.columns[-1] if len(revit_df.columns) > 1 else revit_df.columns[0]
                     col_usar = map_data.get("col_cant", fallback_col) + "_clean"
                     factor = float(map_data.get("factor", 1.0))
@@ -370,12 +363,10 @@ else:
             "6. Conciliador BIM 5D (Revit)"
         ])
 
-        # MÓDULOS 1 AL 5 (Mantenidos intactos de la versión anterior)
         if opcion == "1. Resumen Ejecutivo de Costos":
             st.markdown(f"#### 📐 Análisis del Contrato: *{df_proy.get('Descri', 'Proyecto')}*")
             if st.session_state["modo_cantidades"] == "Modelo Revit 3D":
                 st.warning("⚠️ ESTÁS VISUALIZANDO EL PRESUPUESTO BASADO EN EL MODELO BIM 3D DE REVIT")
-            
             c1, c2, c3, c4 = st.columns(4)
             c1.metric("MONTO TOTAL CALCULADO", f"${monto_total:,.2f}")
             c2.metric("COSTO DIRECTO BASE (CD)", f"${costo_directo:,.2f}")
@@ -384,7 +375,6 @@ else:
             
             st.write("---")
             col_izq, col_der = st.columns([3, 2])
-            
             with col_izq:
                 st.write("##### **Estructura del Costo Directo de Campo**")
                 df_comp = pd.DataFrame({"Componente": ["Materiales", "Mano de Obra", "Equipos y Maquinaria"], "Monto ($)": [mat_totales, man_totales, equ_totales]})
@@ -625,6 +615,34 @@ else:
                     st.success("🤖 Mapeo inicial de inteligencia lingüística finalizado.")
                     st.rerun()
 
+                # =========================================================================
+                # 🧹 NUEVO GESTOR RÁPIDO DE LIMPIEZA MASIVA DE MAPEOS
+                # =========================================================================
+                st.write("---")
+                st.write("##### **🧹 Gestor Rápido de Limpieza (Desvincular Mapeos)**")
+                with st.expander("Abre aquí para desvincular múltiples partidas rápidamente o borrar todo"):
+                    if len(st.session_state["advanced_mapping"]) > 0:
+                        st.write("Si el mapeo automático asoció cosas incorrectas, bórralas aquí sin buscarlas una por una:")
+                        c_borrar1, c_borrar2 = st.columns([3, 1])
+                        
+                        elementos_mapeados = list(st.session_state["advanced_mapping"].keys())
+                        a_borrar = c_borrar1.multiselect("Selecciona los elementos de Revit que deseas DESVINCULAR:", options=elementos_mapeados)
+                        
+                        if c_borrar1.button("🗑️ Desvincular los elementos seleccionados"):
+                            for el in a_borrar:
+                                if el in st.session_state["advanced_mapping"]:
+                                    del st.session_state["advanced_mapping"][el]
+                            st.success("¡Elementos desvinculados exitosamente!")
+                            st.rerun()
+                            
+                        st.write("---")
+                        if st.button("🚨 ELIMINAR TODOS LOS MAPEOS (Empezar desde cero)"):
+                            st.session_state["advanced_mapping"] = {}
+                            st.success("Memoria de mapeos borrada por completo.")
+                            st.rerun()
+                    else:
+                        st.info("No hay mapeos activos actualmente.")
+
                 st.write("---")
                 
                 # --- PANEL INTERACTIVO MULTIVARIABLE ---
@@ -671,7 +689,10 @@ else:
                     options_for_multiselect = list(set(opciones_filtradas + current_mapped_displays))
                     asociaciones_seleccionadas = st.multiselect("🔗 Seleccione las partidas de Lulo a las que se les aplicará este cálculo:", options=options_for_multiselect, default=current_mapped_displays)
                     
-                    if st.button("💾 Guardar y Aplicar Mapeo a este Elemento"):
+                    # BOTONES DE GUARDADO Y DESVINCULACIÓN INDIVIDUAL RÁPIDA
+                    col_btn1, col_btn2 = st.columns(2)
+                    
+                    if col_btn1.button("💾 Guardar y Aplicar Mapeo a este Elemento"):
                         nuevos_codigos = [lulo_options_map[opt] for opt in asociaciones_seleccionadas if opt in lulo_options_map]
                         st.session_state["advanced_mapping"][selected_revit_elem] = {
                             "codes": nuevos_codigos,
@@ -680,6 +701,12 @@ else:
                         }
                         st.success("🎉 ¡Mapeo y Matemáticas guardadas de forma segura!")
                         st.rerun()
+                        
+                    if col_btn2.button("🗑️ Desvincular y Limpiar este Elemento"):
+                        if selected_revit_elem in st.session_state["advanced_mapping"]:
+                            del st.session_state["advanced_mapping"][selected_revit_elem]
+                            st.success("Mapeo eliminado para este elemento.")
+                            st.rerun()
 
                 st.write("---")
                 
