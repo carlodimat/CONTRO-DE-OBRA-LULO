@@ -80,7 +80,7 @@ def clean_numeric_value(val):
     except ValueError:
         return 0.0
 
-# --- NUEVO MOTOR DE LECTURA NATIVO CSV (SANEADO Y BLINDADO EXTREMO) ---
+# --- NUEVO MOTOR DE LECTURA DIRECTA PANDAS (Rápido y Seguro para CSV limpios de Revit) ---
 def load_csv_robustly(file_buffer):
     if file_buffer is None:
         return None
@@ -88,81 +88,38 @@ def load_csv_robustly(file_buffer):
         raw_data = file_buffer.getvalue()
         
         # 1. Autodetectar codificación evitando que UTF-16 sea malinterpretado
-        decoded_text = None
-        
-        if raw_data.startswith(b'\xff\xfe') or raw_data.startswith(b'\xfe\xff') or b'\x00' in raw_data:
-            decoded_text = raw_data.decode("utf-16", errors="ignore")
-        else:
-            try:
-                decoded_text = raw_data.decode("utf-8")
-            except UnicodeDecodeError:
-                decoded_text = raw_data.decode("latin1", errors="ignore")
-        
-        # ELIMINADOR DE VENENO: Eliminar bytes nulos que causan "crash" en el lector CSV de Python
-        decoded_text = decoded_text.replace('\x00', '')
+        encodings = ['utf-8', 'utf-16', 'latin1', 'cp1252']
+        if b'\x00' in raw_data or raw_data.startswith(b'\xff\xfe') or raw_data.startswith(b'\xfe\xff'):
+            encodings = ['utf-16', 'utf-8', 'latin1', 'cp1252']
             
-        # Homogeneizar saltos de línea
-        decoded_text = decoded_text.replace('\r\n', '\n').replace('\r', '\n')
-        
-        # 2. Detectar el separador analizando con el motor csv nativo
-        separators = [',', ';', '\t']
-        best_sep = ','
-        max_cols = 0
-        
-        for sep in separators:
-            reader = csv.reader(io.StringIO(decoded_text), delimiter=sep)
-            current_max = 0
-            lines_checked = 0
+        df = None
+        for enc in encodings:
             try:
-                for row in reader:
-                    if len(row) > current_max:
-                        current_max = len(row)
-                    lines_checked += 1
-                    if lines_checked > 30:
-                        break
+                decoded = raw_data.decode(enc)
+                # Eliminar bytes nulos que confunden a Pandas
+                decoded = decoded.replace('\x00', '')
+                # Homogeneizar saltos de línea
+                decoded = decoded.replace('\r\n', '\n').replace('\r', '\n')
+                
+                # Probar lectura directa con el motor de Pandas
+                temp_df = pd.read_csv(io.StringIO(decoded), sep=None, engine='python', on_bad_lines='skip')
+                
+                if not temp_df.empty and len(temp_df.columns) > 0:
+                    df = temp_df
+                    break
             except Exception:
                 pass
-            if current_max > max_cols:
-                max_cols = current_max
-                best_sep = sep
                 
-        # 3. Encontrar la verdadera cabecera y extraer filas
-        reader = csv.reader(io.StringIO(decoded_text), delimiter=best_sep)
-        rows = list(reader)
-        
-        if not rows:
+        if df is None or df.empty:
+            # Fallback absoluto a lectura estándar delimitada por comas
+            df = pd.read_csv(io.BytesIO(raw_data), on_bad_lines='skip')
+            
+        if df is None or df.empty:
             return None
             
-        header_idx = 0
-        for i, row in enumerate(rows[:30]):
-            cleaned_row = [str(c).strip() for c in row]
-            non_empty = [c for c in cleaned_row if c]
-            if len(non_empty) >= max_cols - 2 and len(non_empty) > 1:
-                header_idx = i
-                break
-                
-        # 4. Aislar la cabecera y los datos (Obligar alineación geométrica)
-        header_row = [str(c).strip() for c in rows[header_idx]]
-        data_rows = rows[header_idx + 1:]
-        
-        safe_data_rows = []
-        target_len = len(header_row)
-        for row in data_rows:
-            if not any(str(c).strip() for c in row):
-                continue
-                
-            if len(row) < target_len:
-                row = row + [""] * (target_len - len(row))
-            elif len(row) > target_len:
-                row = row[:target_len]
-                
-            safe_data_rows.append(row)
-        
-        # 5. Crear el DataFrame de forma directa
-        df = pd.DataFrame(safe_data_rows, columns=header_row)
-        
         # --- LIMPIEZA POST-CARGA DEL DATAFRAME ---
-        df.replace("", float("NaN"), inplace=True)
+        df = df.dropna(how='all') # Eliminar filas 100% vacías
+        df = df.dropna(how='all', axis=1) # Eliminar columnas 100% vacías
         
         # Erradicar columnas 'Unnamed' o vacías que no contienen datos útiles
         keep_indices = []
@@ -170,7 +127,7 @@ def load_csv_robustly(file_buffer):
         for i, col in enumerate(df.columns):
             col_str = str(col).strip()
             if "unnamed" in col_str.lower() or col_str.lower() in ['nan', 'none'] or not col_str:
-                if df.iloc[:, i].notna().sum() > 1:
+                if df.iloc[:, i].notna().sum() > 1: # Si tiene al menos 2 datos, la salvamos
                     keep_indices.append(i)
                     new_names.append(f"Col_Adicional_{i+1}")
             else:
@@ -179,7 +136,7 @@ def load_csv_robustly(file_buffer):
                 
         df = df.iloc[:, keep_indices]
         
-        # 6. BLINDAJE STREAMLIT: Asegurar nombres de columnas únicos
+        # BLINDAJE STREAMLIT: Asegurar nombres de columnas únicos para que no colapse la interfaz
         seen = {}
         unique_cols = []
         for col in new_names:
@@ -191,10 +148,7 @@ def load_csv_robustly(file_buffer):
                 unique_cols.append(col)
         df.columns = unique_cols
         
-        # 7. Eliminar filas donde todos los valores sean nulos
-        df = df.dropna(how='all')
-        
-        # Filtrar filas de sumatorias finales (Grand Total)
+        # Filtrar filas de sumatorias finales (Grand Total) exportadas por Revit
         def is_valid_row(row):
             row_str = " ".join(row.astype(str).fillna("").lower())
             if "total" in row_str or "suma" in row_str or "grand total" in row_str:
@@ -827,11 +781,11 @@ else:
             
             with col_l:
                 st.write("##### **1. Cargar Reporte Multicategoría de Revit**")
-                archivo_subido = st.file_uploader("Arrastra aquí el CSV exportado de Revit", type=["csv"], key="revit_uploader")
+                archivo_subido = st.file_uploader("Arrastra aquí el CSV exportado de Revit limpios", type=["csv"], key="revit_uploader")
                 if archivo_subido is not None:
                     try:
                         st.session_state["revit_raw_df"] = load_csv_robustly(archivo_subido)
-                        if st.session_state["revit_raw_df"] is not None:
+                        if st.session_state["revit_raw_df"] is not None and not st.session_state["revit_raw_df"].empty:
                             st.success("🟢 Tabla de Revit cargada y depurada en memoria.")
                         else:
                             st.error("❌ El archivo cargado está vacío o su formato es irreconocible.")
@@ -845,7 +799,7 @@ else:
                 if archivo_mapeo is not None:
                     try:
                         df_map_uploaded = load_csv_robustly(archivo_mapeo)
-                        if df_map_uploaded is not None:
+                        if df_map_uploaded is not None and not df_map_uploaded.empty:
                             if "Elemento_Revit" in df_map_uploaded.columns and "Codigo_Lulo" in df_map_uploaded.columns:
                                 # Agrupar las filas de mapeo existentes
                                 temp_map = {}
@@ -863,7 +817,7 @@ else:
                     except Exception as ex:
                         st.error(f"Error al cargar mapeo: {ex}")
 
-            if st.session_state["revit_raw_df"] is not None:
+            if st.session_state["revit_raw_df"] is not None and not st.session_state["revit_raw_df"].empty:
                 st.write("---")
                 st.markdown("### 🗺️ Tablero de Asociación de Conceptos (BIM Mapper)")
                 st.write("Configura qué columnas usar para la descripción y cantidad, luego asocia de forma múltiple cada concepto de Revit con tu presupuesto de Lulo:")
@@ -1071,8 +1025,6 @@ else:
                         "Cant. Lulo": "{:,.2f}", "Cant. Revit": "{:,.2f}", "Dif. Cantidad": "{:,.2f}", 
                         "Desv. (%)": "{:.2f}%", "P.U. ($)": "${:,.2f}", "Impacto ($)": "${:,.2f}"
                     }), width="stretch", height=500)
-            else:
-                st.info("💡 Por favor, importa un archivo CSV de Revit o usa el botón expandible de arriba 'Descargar Revit_Multicategoria_Prueba.csv' para ver el panel de asociación manual en acción.")
 
     except Exception as e:
         st.error(f"⚠️ Error al sincronizar los datos relacionales avanzados del proyecto. Por favor verifica tus archivos CSV.")
