@@ -79,7 +79,7 @@ def clean_numeric_value(val):
     except ValueError:
         return 0.0
 
-# --- NUEVO MOTOR DE LECTURA DIRECTA (LIBRE DEL BUG LENGTH MISMATCH) ---
+# --- NUEVO MOTOR DE LECTURA DIRECTA (LIBRE DEL BUG LENGTH MISMATCH Y DELIMITER ERROR) ---
 def load_csv_robustly(file_buffer):
     if file_buffer is None:
         return None
@@ -102,20 +102,35 @@ def load_csv_robustly(file_buffer):
         if not decoded_text:
             decoded_text = raw_data.decode('utf-8', errors='ignore')
             
-        # 2. Motor nativo Pandas (La forma más veloz y segura para CSV limpios)
-        df = pd.read_csv(io.StringIO(decoded_text), sep=None, engine='python', on_bad_lines='skip')
+        # 2. Detección manual del separador (Evita el ValueError: Could not determine delimiter)
+        # Analizamos las primeras 20 líneas para contar qué separador predomina
+        first_lines = "\n".join(decoded_text.split('\n')[:20])
+        separators = [',', ';', '\t']
+        sep_counts = {sep: first_lines.count(sep) for sep in separators}
+        best_sep = max(sep_counts, key=sep_counts.get)
+        
+        # Si no detecta ninguno, asumimos que es una coma por defecto
+        if sep_counts[best_sep] == 0:
+            best_sep = ','
+            
+        # 3. Leer con Pandas dándole el separador explícito en la boca
+        try:
+            df = pd.read_csv(io.StringIO(decoded_text), sep=best_sep, on_bad_lines='skip')
+        except Exception:
+            # Fallback al motor de Python por si las comillas internas son muy complejas
+            df = pd.read_csv(io.StringIO(decoded_text), sep=best_sep, engine='python', on_bad_lines='skip')
         
         if df is None or df.empty:
             return None
             
-        # 3. EVITAR EL ERROR PANDAS "LENGTH MISMATCH" (Obligatorio clonar la memoria)
+        # 4. EVITAR EL ERROR PANDAS "LENGTH MISMATCH" (Obligatorio clonar la memoria)
         df = df.copy()
         
         # Limpieza de vacíos
         df = df.dropna(how='all')
         df = df.dropna(how='all', axis=1)
         
-        # 4. Modo Rescate: Si el usuario exportó el Título de Tabla sin querer, las columnas dicen "Unnamed"
+        # 5. Modo Rescate: Si el usuario exportó el Título de Tabla sin querer, las columnas dicen "Unnamed"
         unnamed_count = sum(1 for c in df.columns if "unnamed" in str(c).lower())
         if unnamed_count >= len(df.columns) / 2 and len(df) > 0:
             new_header = df.iloc[0].astype(str)
@@ -123,7 +138,7 @@ def load_csv_robustly(file_buffer):
             df.columns = new_header
             df = df.dropna(how='all', axis=1)
             
-        # 5. Cortar las columnas basura residuales (Como la coma final que pone Revit)
+        # 6. Cortar las columnas basura residuales (Como la coma final que pone Revit)
         keep_cols = []
         new_names = []
         for i, col in enumerate(df.columns):
@@ -139,7 +154,7 @@ def load_csv_robustly(file_buffer):
         # Seleccionar las columnas útiles haciendo otra copia en duro
         df = df[keep_cols].copy()
         
-        # 6. Blindaje de Streamlit: Garantizar nombres únicos
+        # 7. Blindaje de Streamlit: Garantizar nombres únicos
         seen = {}
         unique_cols = []
         for col in new_names:
@@ -152,7 +167,7 @@ def load_csv_robustly(file_buffer):
                 
         df.columns = unique_cols
         
-        # 7. Filtrar filas inútiles o sumatorias "Grand Total"
+        # 8. Filtrar filas inútiles o sumatorias "Grand Total"
         def is_valid_row(row):
             row_str = " ".join(row.astype(str).fillna("").lower())
             if "total" in row_str or "suma" in row_str or "grand total" in row_str:
@@ -1019,4 +1034,19 @@ else:
                     
                     df_audit_visual = df_audit_filtrada[[
                         "CodPar", "NomPar", "CanPar", "Cantidad_Revit", "Diferencia_Cantidad", "Diferencia_Porcentual (%)", "PreUni", "Impacto_Financiero ($)", "Estado Conciliación"
-                    ]].sort_values(by="
+                    ]].sort_values(by="Impacto_Financiero ($)", key=abs, ascending=False).reset_index(drop=True)
+                    
+                    df_audit_visual.columns = [
+                        "Código", "Descripción de la Partida", "Cant. Lulo", "Cant. Revit", "Dif. Cantidad", "Desv. (%)", "P.U. ($)", "Impacto ($)", "Auditoría de Conciliación"
+                    ]
+                    
+                    st.dataframe(df_audit_visual.style.format({
+                        "Cant. Lulo": "{:,.2f}", "Cant. Revit": "{:,.2f}", "Dif. Cantidad": "{:,.2f}", 
+                        "Desv. (%)": "{:.2f}%", "P.U. ($)": "${:,.2f}", "Impacto ($)": "${:,.2f}"
+                    }), width="stretch", height=500)
+            else:
+                st.info("💡 Por favor, importa un archivo CSV de Revit o usa el botón expandible de arriba 'Descargar Revit_Multicategoria_Prueba.csv' para ver el panel de asociación manual en acción.")
+
+    except Exception as e:
+        st.error(f"⚠️ Error al sincronizar los datos relacionales avanzados del proyecto. Por favor verifica tus archivos CSV.")
+        st.code(str(e))
