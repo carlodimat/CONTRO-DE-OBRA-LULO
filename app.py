@@ -295,14 +295,23 @@ else:
         else:
             st.session_state["modo_cantidades"] = "Original Lulo"
         
-        # --- PROCESAMIENTO DINÁMICO DE CANTIDADES (MULTIVARIABLE) ---
+        # --- PROCESAMIENTO DINÁMICO DE CANTIDADES (MULTIVARIABLE CON IDENTIFICADOR COMPUESTO) ---
         if conector_listo and st.session_state["modo_cantidades"] == "Modelo Revit 3D":
             revit_df = st.session_state["revit_raw_df"].copy()
             col_desc = st.session_state.get("col_desc_global", revit_df.columns[0])
+            col_mat = st.session_state.get("col_mat_global", "NO_USAR")
             
-            # Pre-limpiar todas las columnas para cálculos rápidos
+            # Crear el identificador único compuesto
+            if col_mat != "NO_USAR" and col_mat in revit_df.columns:
+                revit_df["Identificador_Compuesto"] = revit_df[col_desc].astype(str) + " | " + revit_df[col_mat].astype(str)
+            else:
+                revit_df["Identificador_Compuesto"] = revit_df[col_desc].astype(str)
+                
+            identificador_col = "Identificador_Compuesto"
+            
+            # Pre-limpiar todas las columnas numéricas para cálculos rápidos
             for col in revit_df.columns:
-                if col != col_desc:
+                if col not in [col_desc, col_mat, identificador_col]:
                     revit_df[col + "_clean"] = revit_df[col].apply(clean_numeric_value)
             
             cantidades_revit_acumuladas = {row["CodPar"]: 0.0 for _, row in df_pres.iterrows()}
@@ -310,7 +319,7 @@ else:
             
             # Bucle de acumulación con Factores de Conversión y Columnas Dinámicas
             for _, row in revit_df.iterrows():
-                elem_name = row[col_desc]
+                elem_name = row[identificador_col]
                 if elem_name in st.session_state["advanced_mapping"]:
                     map_data = st.session_state["advanced_mapping"][elem_name]
                     codigos_lulo = map_data.get("codes", [])
@@ -571,12 +580,28 @@ else:
                 
                 revit_raw = st.session_state["revit_raw_df"].copy()
                 cols_raw = list(revit_raw.columns)
-                st.session_state["col_desc_global"] = st.selectbox("📌 ¿Qué columna tiene el Nombre del Elemento en Revit?", cols_raw, index=0)
+                
+                col_sel1, col_sel2 = st.columns(2)
+                st.session_state["col_desc_global"] = col_sel1.selectbox("📌 Selecciona la columna del Nombre (Ej: Tipo, Elemento):", cols_raw, index=0)
+                
+                # Opción para seleccionar una columna secundaria opcional
+                opciones_secundarias = ["NO_USAR"] + cols_raw
+                st.session_state["col_mat_global"] = col_sel2.selectbox("📌 Opcional: Selecciona una sub-categoría (Ej: Material):", opciones_secundarias, index=0)
+                
                 col_desc = st.session_state["col_desc_global"]
+                col_mat = st.session_state["col_mat_global"]
+                
+                # Crear el identificador único compuesto para la visualización y el mapeo
+                if col_mat != "NO_USAR" and col_mat in revit_raw.columns:
+                    revit_raw["Identificador_Compuesto"] = revit_raw[col_desc].astype(str) + " | " + revit_raw[col_mat].astype(str)
+                else:
+                    revit_raw["Identificador_Compuesto"] = revit_raw[col_desc].astype(str)
+                
+                identificador_col = "Identificador_Compuesto"
                 
                 # Pre-limpiar numéricos temporalmente para mostrar previews limpios
                 for c in cols_raw:
-                    if c != col_desc:
+                    if c not in [col_desc, col_mat]:
                         revit_raw[c + "_clean"] = revit_raw[c].apply(clean_numeric_value)
                 
                 lulo_dict_items = [(row['CodPar'], row['NomPar']) for _, row in df_pres.iterrows()]
@@ -586,9 +611,11 @@ else:
                 st.write("##### **🤖 Mapeo Lingüístico Automático (Asignará Columnas y Factores por Defecto 1.0):**")
                 if st.button("⚡ Ejecutar Mapeo Automático Inteligente", help="Asocia elementos mediante concordancia de palabras clave"):
                     new_mapping = st.session_state["advanced_mapping"].copy()
-                    for elem in revit_raw[col_desc].unique():
+                    for elem in revit_raw[identificador_col].unique():
                         if elem not in new_mapping or len(new_mapping[elem].get("codes", [])) == 0:
-                            best_match = encontrar_mejor_coincidencia(elem, lulo_dict_items)
+                            # Buscar usando solo la primera parte del nombre si tiene compuesto
+                            search_term = elem.split(" | ")[0] if " | " in elem else elem
+                            best_match = encontrar_mejor_coincidencia(search_term, lulo_dict_items)
                             new_mapping[elem] = {
                                 "codes": [best_match] if best_match != "NINGUNA / EXCLUIR" else [],
                                 "col_cant": cols_raw[-1], # Por defecto toma la última
@@ -602,7 +629,7 @@ else:
                 
                 # --- PANEL INTERACTIVO MULTIVARIABLE ---
                 st.write("### 📝 Panel de Configuración Multivariable:")
-                revit_elements = list(revit_raw[col_desc].dropna().unique())
+                revit_elements = list(revit_raw[identificador_col].dropna().unique())
                 
                 selected_revit_elem = st.selectbox("👉 Seleccione un Elemento del Modelo de Revit a configurar:", options=revit_elements)
                 
@@ -623,7 +650,7 @@ else:
                     factor = col2.number_input("✖️ Factor de Conversión (Ej: 7850 para Acero, 1.0 normal):", value=float(elem_data["factor"]), format="%.4f")
                     
                     # Mostrar Preview Matemático
-                    elem_df = revit_raw[revit_raw[col_desc] == selected_revit_elem]
+                    elem_df = revit_raw[revit_raw[identificador_col] == selected_revit_elem]
                     if col_cant_especifica + "_clean" in elem_df.columns:
                         qty_base = elem_df[col_cant_especifica + "_clean"].sum()
                         qty_final = qty_base * factor
@@ -681,7 +708,7 @@ else:
                     
                     expanded_rows = []
                     for _, r_row in revit_raw.iterrows():
-                        elem_name = r_row[col_desc]
+                        elem_name = r_row[identificador_col]
                         if elem_name in st.session_state["advanced_mapping"]:
                             data = st.session_state["advanced_mapping"][elem_name]
                             col_c = data["col_cant"] + "_clean"
@@ -689,7 +716,7 @@ else:
                             if col_c in r_row.index:
                                 qty = r_row[col_c] * fac
                                 for c in data.get("codes", []):
-                                    # NUEVA MEJORA: Pasamos el nombre del elemento para poder auditar qué se sumó
+                                    # Pasamos el nombre del elemento compuesto para auditar qué se sumó
                                     expanded_rows.append({"CodPar": c, "Cantidad_Revit_Item": qty, "Elemento_Revit_Origen": elem_name})
                     
                     if expanded_rows:
@@ -741,7 +768,7 @@ else:
                     df_audit_visual = df_audit[df_audit["Estado Conciliación"].isin(estado_filtro)].copy()
                     df_audit_visual = df_audit_visual[["CodPar", "NomPar", "Elementos_Revit_Agrupados", "CanPar", "Cantidad_Revit", "Diferencia_Cantidad", "Diferencia_Porcentual (%)", "PreUni", "Impacto_Financiero ($)", "Estado Conciliación"]].sort_values(by="Impacto_Financiero ($)", key=abs, ascending=False).reset_index(drop=True)
                     
-                    # Ahora la tabla le mostrará al usuario exactamente qué cosas de Revit se sumaron para llegar al total
+                    # Mostrar tabla de auditoría con la nueva mejora
                     df_audit_visual.columns = ["Código", "Descripción Lulo", "🧩 Elementos Sumados de Revit", "Cant. Lulo", "Cant. Revit", "Dif. Cantidad", "Desv. (%)", "P.U. ($)", "Impacto ($)", "Auditoría de Conciliación"]
                     st.dataframe(df_audit_visual.style.format({"Cant. Lulo": "{:,.2f}", "Cant. Revit": "{:,.2f}", "Dif. Cantidad": "{:,.2f}", "Desv. (%)": "{:.2f}%", "P.U. ($)": "${:,.2f}", "Impacto ($)": "${:,.2f}"}), width="stretch", height=500)
 
