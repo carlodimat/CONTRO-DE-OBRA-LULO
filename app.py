@@ -79,7 +79,7 @@ def clean_numeric_value(val):
     except ValueError:
         return 0.0
 
-# --- NUEVO MOTOR DE LECTURA DIRECTA (LIBRE DEL BUG LENGTH MISMATCH Y DELIMITER ERROR) ---
+# --- NUEVO MOTOR DE LECTURA DIRECTA MATEMÁTICO (A PRUEBA DE FALLOS DE PANDAS) ---
 def load_csv_robustly(file_buffer):
     if file_buffer is None:
         return None
@@ -102,62 +102,55 @@ def load_csv_robustly(file_buffer):
         if not decoded_text:
             decoded_text = raw_data.decode('utf-8', errors='ignore')
             
-        # 2. Detección manual del separador (Evita el ValueError: Could not determine delimiter)
-        # Analizamos las primeras 20 líneas para contar qué separador predomina
+        # 2. Detección manual del separador
         first_lines = "\n".join(decoded_text.split('\n')[:20])
         separators = [',', ';', '\t']
         sep_counts = {sep: first_lines.count(sep) for sep in separators}
         best_sep = max(sep_counts, key=sep_counts.get)
-        
-        # Si no detecta ninguno, asumimos que es una coma por defecto
         if sep_counts[best_sep] == 0:
             best_sep = ','
             
-        # 3. Leer con Pandas dándole el separador explícito en la boca
+        # 3. Leer con Pandas
         try:
             df = pd.read_csv(io.StringIO(decoded_text), sep=best_sep, on_bad_lines='skip')
         except Exception:
-            # Fallback al motor de Python por si las comillas internas son muy complejas
             df = pd.read_csv(io.StringIO(decoded_text), sep=best_sep, engine='python', on_bad_lines='skip')
         
         if df is None or df.empty:
             return None
             
-        # 4. EVITAR EL ERROR PANDAS "LENGTH MISMATCH" (Obligatorio clonar la memoria)
         df = df.copy()
         
-        # Limpieza de vacíos
-        df = df.dropna(how='all')
-        df = df.dropna(how='all', axis=1)
-        
-        # 5. Modo Rescate: Si el usuario exportó el Título de Tabla sin querer, las columnas dicen "Unnamed"
+        # 4. Modo Rescate: Si el usuario exportó el Título de Tabla sin querer
         unnamed_count = sum(1 for c in df.columns if "unnamed" in str(c).lower())
         if unnamed_count >= len(df.columns) / 2 and len(df) > 0:
             new_header = df.iloc[0].astype(str)
             df = df[1:].copy()
-            df.columns = new_header
-            df = df.dropna(how='all', axis=1)
+            df.columns = [f"Col_{i}" for i in range(len(df.columns))] # Nombres temporales seguros
             
-        # 6. Cortar las columnas basura residuales (Como la coma final que pone Revit)
-        keep_cols = []
+        # 5. SELECCIÓN MATEMÁTICA ESTRICTA (Uso de ILOC) PARA EVITAR EL BUG DE PANDAS
+        keep_indices = []
         new_names = []
-        for i, col in enumerate(df.columns):
-            col_str = str(col).strip()
-            if "unnamed" in col_str.lower() or col_str.lower() in ['nan', 'none'] or not col_str:
+        for i in range(len(df.columns)):
+            col_str = str(df.columns[i]).strip()
+            # Validar si la columna tiene un nombre útil
+            if "unnamed" in col_str.lower() or col_str.lower() in ['nan', 'none', '']:
                 if df.iloc[:, i].notna().sum() > 0: # Salvar si tiene datos
-                    keep_cols.append(df.columns[i])
+                    keep_indices.append(i)
                     new_names.append(f"Col_Extra_{i+1}")
             else:
-                keep_cols.append(df.columns[i])
+                keep_indices.append(i)
                 new_names.append(col_str)
                 
-        # Seleccionar las columnas útiles haciendo otra copia en duro
-        df = df[keep_cols].copy()
+        # Aislar las columnas exactas por su posición, no por su nombre (Blindaje absoluto)
+        df = df.iloc[:, keep_indices].copy()
         
-        # 7. Blindaje de Streamlit: Garantizar nombres únicos
+        # 6. Blindaje de Streamlit: Garantizar nombres únicos finales
         seen = {}
         unique_cols = []
         for col in new_names:
+            if not col or col.lower() == 'nan':
+                col = "Columna"
             if col in seen:
                 seen[col] += 1
                 unique_cols.append(f"{col}_{seen[col]}")
@@ -166,6 +159,9 @@ def load_csv_robustly(file_buffer):
                 unique_cols.append(col)
                 
         df.columns = unique_cols
+        
+        # 7. Limpieza de vacíos totales
+        df = df.dropna(how='all')
         
         # 8. Filtrar filas inútiles o sumatorias "Grand Total"
         def is_valid_row(row):
